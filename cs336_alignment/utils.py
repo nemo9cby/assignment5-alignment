@@ -1,5 +1,42 @@
 
 import torch
+from transformers import PreTrainedModel
+
+def get_response_log_probs(
+        model: PreTrainedModel,
+        input_ids: torch.Tensor,
+        labels: torch.Tensor,
+        return_token_entropy: bool = False,
+    ) -> dict:
+    # TODO 1: get the log probabilities of the response tokens in `labels`
+    # using the provided `model` and `input_ids`.
+    
+    model_outputs = model(input_ids=input_ids)
+    logits = model_outputs.logits
+
+    log_probs_all = torch.log_softmax(logits, dim=-1) 
+    log_probs = torch.gather(log_probs_all, dim=2, index=labels.unsqueeze(-1))
+    log_probs = log_probs.squeeze(-1)  # Shape: (batch_size, seq_len)
+    token_entropy = compute_entropy(logits) if return_token_entropy else None
+
+    return {"log_probs": log_probs, "token_entropy": token_entropy}
+
+
+def compute_entropy(logits: torch.Tensor) -> torch.Tensor:
+    """
+    Compute the entropy of the probability distribution defined by the logits.
+
+    Args:
+        logits: Tensor of shape (batch_size, seq_len, vocab_size)
+
+    Returns:
+        Tensor of shape (batch_size, seq_len) representing the entropy at each position.
+    """
+    probs = torch.softmax(logits, dim=-1)
+    log_probs = torch.log_softmax(logits, dim=-1)
+    entropy = -torch.sum(probs * log_probs, dim=-1)
+    return entropy
+
 
 def tokenize_prompt_and_output(prompt_strs, output_strs, tokenizer):
     """

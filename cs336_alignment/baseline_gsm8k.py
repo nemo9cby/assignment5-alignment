@@ -84,6 +84,10 @@ def evaluate_vllm(
     """
     assert len(prompts) == len(ground_truths), "Prompts and ground truths must have same length"
 
+    # Create output directory if specified
+    if output_dir:
+        os.makedirs(output_dir, exist_ok=True)
+
     print(f"Generating responses for {len(prompts)} prompts...")
 
     # Generate responses using vLLM
@@ -171,8 +175,6 @@ def evaluate_vllm(
 
     # Save final results
     if output_dir:
-        os.makedirs(output_dir, exist_ok=True)
-
         # Save detailed results
         results_path = os.path.join(output_dir, "results.json")
         with open(results_path, 'w') as f:
@@ -254,7 +256,7 @@ def main():
                        default=f"results/baseline_gsm8k_{datetime.now().strftime('%Y%m%d_%H%M%S')}",
                        help="Directory to save results")
 
-    parser.add_argument("--max-examples", type=int, default=None,
+    parser.add_argument("--max-examples", type=int, default=100,
                        help="Maximum number of examples to evaluate (for debugging)")
 
     # Generation parameters
