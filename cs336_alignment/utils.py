@@ -2,6 +2,62 @@
 import torch
 from transformers import PreTrainedModel
 
+def sft_microbatch_train_step(
+    policy_log_probs: torch.Tensor,
+    response_mask: torch.Tensor,
+    gradient_accumulation_steps: int,
+    normalize_constant: float = 1.0,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+
+    # SFT loss is NEGATIVE log likelihood (negate the log probs)
+    neg_log_probs = -policy_log_probs
+
+    # Sum over sequence dimension (dim=1) with masking and normalization
+    # This gives us one loss value per example in the batch
+    per_example_loss = masked_normalize(
+        neg_log_probs,
+        response_mask,
+        normalize_constant,
+        dim=1  # Sum over sequence dimension
+    )
+
+    # Average over the batch dimension
+    batch_loss = per_example_loss.mean()
+
+    # Scale for gradient accumulation
+    scaled_loss = batch_loss / gradient_accumulation_steps
+
+    # Backward pass
+    scaled_loss.backward()
+
+    # Metadata (report the unscaled loss for logging)
+    metadata = {
+        "loss": batch_loss.item(),  # Actual loss value
+        "per_example_loss": per_example_loss.detach()  # Per-example losses
+    }
+
+    return scaled_loss, metadata
+
+def masked_normalize(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    normalize_constant: float,
+    dim: int | None= None,
+    ) -> torch.Tensor:
+    masked_tensor = tensor * mask
+
+    if dim is None:
+        # Sum over ALL dimensions -> scalar output
+        result = masked_tensor.sum() / normalize_constant
+    else:
+        # Sum over specified dimension -> that dimension disappears
+        result = masked_tensor.sum(dim=dim) / normalize_constant
+
+    return result
+    
+
+
+
 def get_response_log_probs(
         model: PreTrainedModel,
         input_ids: torch.Tensor,
