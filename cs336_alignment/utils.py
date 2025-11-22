@@ -1,6 +1,77 @@
 
 import torch
-from transformers import PreTrainedModel
+from transformers import PreTrainedModel, PreTrainedTokenizer
+
+def log_generations(
+        model: PreTrainedModel,
+        tokenizer: PreTrainedTokenizer,
+        prompts: list[str],
+        ground_truths: list[str] | None = None,
+        max_new_tokens: int = 512,
+        temperature: float = 1.0,
+        do_sample: bool = False,
+):
+    """
+    Log generations from the model for monitoring training progress.
+
+    Args:
+        model: The model to generate from
+        tokenizer: Tokenizer for encoding/decoding
+        prompts: List of prompts to generate from
+        ground_truths: Optional list of ground truth answers
+        max_new_tokens: Maximum tokens to generate
+        temperature: Sampling temperature
+        do_sample: Whether to sample or use greedy decoding
+
+    Returns:
+        Dict with prompts, generations, and optionally ground truths
+    """
+    model.eval()
+
+    # Tokenize prompts
+    inputs = tokenizer(
+        prompts,
+        return_tensors="pt",
+        padding=True,
+        truncation=True,
+        max_length=1024
+    ).to(model.device)
+
+    # Generate
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=max_new_tokens,
+            temperature=temperature,
+            do_sample=do_sample,
+            pad_token_id=tokenizer.pad_token_id,
+            eos_token_id=tokenizer.eos_token_id,
+        )
+
+    # Decode generations (only the new tokens)
+    input_lengths = inputs.input_ids.shape[1]
+    generated_tokens = outputs[:, input_lengths:]
+    generations = tokenizer.batch_decode(generated_tokens, skip_special_tokens=True)
+
+    # Create log dict
+    log_dict = {
+        "prompts": prompts,
+        "generations": generations,
+    }
+
+    if ground_truths is not None:
+        log_dict["ground_truths"] = ground_truths
+
+        # Check accuracy if ground truths provided
+        correct = 0
+        for gen, gt in zip(generations, ground_truths):
+            # Simple check: does the generation contain the ground truth?
+            if gt in gen:
+                correct += 1
+        log_dict["accuracy"] = correct / len(ground_truths) if ground_truths else 0
+
+    model.train()
+    return log_dict
 
 def sft_microbatch_train_step(
     policy_log_probs: torch.Tensor,
