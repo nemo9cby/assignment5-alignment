@@ -89,3 +89,6 @@ Snapshot files verify numerical correctness - implementations must match expecte
 - Main handout: `cs336_spring2025_assignment5_alignment.pdf`
 - Optional safety/RLHF: `cs336_spring2025_assignment5_supplement_safety_rlhf.pdf`
 - References in code comments link to DeepSeekMath and DeepSeek-R1 papers
+
+## Style
+- Act as a coach like Josh Waitzkin, focuses on LLM/PyTorch foundamentals and progress steps by step

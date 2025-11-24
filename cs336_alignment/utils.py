@@ -2,6 +2,123 @@
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
 
+def compute_grpo_clip_loss(
+    advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor,
+    old_log_probs: torch.Tensor,
+    cliprange: float,) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    # why here no need for setting up cuda devices?
+    ratio = torch.exp(policy_log_probs - old_log_probs)
+    a = -advantages * ratio # shape B, T
+    b = -advantages * torch.clamp(ratio, min=1-cliprange, max=1+cliprange)
+    results = torch.min(a,b)
+    
+    with torch.no_grad():
+        clipfrac = ((ratio < 1.0 - cliprange) | (ratio > 1.0 +
+  cliprange)).float()
+
+    metadata = {
+      "clipfrac": clipfrac,  # Fraction of tokens that got clipped
+      }    
+    
+    return results, metadata
+    
+
+
+def compute_naive_policy_gradient_loss(
+    raw_rewards_or_advantages: torch.Tensor,
+    policy_log_probs: torch.Tensor,
+) -> torch.Tensor:
+    loss = - raw_rewards_or_advantages * policy_log_probs
+    return loss
+
+
+def compute_group_normalized_rewards(
+    reward_fn,
+    rollout_responses,
+    repeated_ground_truths,
+    group_size,
+    advantage_eps,
+    normalize_by_std,
+):
+    """
+    Compute rewards for each group of rollout responses,
+    normalized by the group size.
+
+    Args:
+        reward_fn: Callable[[str, str], dict[str, float]],
+            scores the rollout responses against the ground truths,
+            producing a dict with keys
+            "reward", "format_reward", and "answer_reward".
+        rollout_responses: list[str], rollouts from the policy.
+            The length of this list is
+            rollout_batch_size = n_prompts_per_rollout_batch * group_size.
+        repeated_ground_truths: list[str], the ground truths for the examples.
+            The length of this list is rollout_batch_size,
+            because the ground truth for each example is repeated group_size times.
+        group_size: int, number of rollouts per group.
+        advantage_eps: float, epsilon to avoid division by zero
+            during group normalization.
+        normalize_by_std: bool, whether to normalize the rewards by
+            std(rewards).
+
+    Returns:
+        tuple[torch.Tensor, torch.Tensor, dict[str, float]]:
+            torch.Tensor of shape (rollout_batch_size,):
+                group-normalized rewards for each rollout response.
+            torch.Tensor of shape (rollout_batch_size,):
+                raw rewards for each rollout response.
+            dict[str, float]: metadata for the rewards of the rollout batch.
+    """
+    rollout_batch_size = len(rollout_responses)
+    assert rollout_batch_size == len(repeated_ground_truths)
+    assert rollout_batch_size % group_size == 0
+
+    # Step 1: Compute raw rewards for each response
+    raw_rewards_list = []
+    format_rewards_list = []
+    answer_rewards_list = []
+
+    for response, ground_truth in zip(rollout_responses, repeated_ground_truths):
+        reward_dict = reward_fn(response, ground_truth)
+        raw_rewards_list.append(reward_dict["reward"])
+        format_rewards_list.append(reward_dict["format_reward"])
+        answer_rewards_list.append(reward_dict["answer_reward"])
+
+    # Convert to tensor
+    raw_rewards = torch.tensor(raw_rewards_list, dtype=torch.float32)
+
+    # Step 2: Normalize rewards within each group
+    # Reshape to (n_prompts, group_size) to process each group
+    n_prompts = rollout_batch_size // group_size
+    raw_rewards_grouped = raw_rewards.view(n_prompts, group_size)
+
+    # Compute mean and std for each group
+    group_means = raw_rewards_grouped.mean(dim=1, keepdim=True)
+
+    if normalize_by_std:
+        group_stds = raw_rewards_grouped.std(dim=1, keepdim=True)
+        # Normalize: (r - mean) / (std + eps)
+        normalized_rewards_grouped = (raw_rewards_grouped - group_means) / (group_stds + advantage_eps)
+    else:
+        # Just subtract mean: r - mean (Dr. GRPO approach)
+        normalized_rewards_grouped = raw_rewards_grouped - group_means
+
+    # Flatten back to original shape
+    normalized_rewards = normalized_rewards_grouped.view(rollout_batch_size)
+
+    # Step 3: Compute metadata
+    metadata = {
+        "mean_reward": float(raw_rewards.mean().item()),
+        "max_reward": float(raw_rewards.max().item()),
+        "min_reward": float(raw_rewards.min().item()),
+        "std_reward": float(raw_rewards.std().item()),
+        "mean_format_reward": float(torch.tensor(format_rewards_list).mean().item()),
+        "mean_answer_reward": float(torch.tensor(answer_rewards_list).mean().item()),
+    }
+
+    return normalized_rewards, raw_rewards, metadata
+
 def log_generations(
         model: PreTrainedModel,
         tokenizer: PreTrainedTokenizer,
