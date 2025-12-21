@@ -1,6 +1,69 @@
 
+from typing import Literal
 import torch
 from transformers import PreTrainedModel, PreTrainedTokenizer
+
+def grpo_microbatch_train_step(
+    policy_log_probs: torch.Tensor,    # (batch_size, seq_length) - requires_grad=True
+    response_mask: torch.Tensor,       # (batch_size, seq_length) - 1 for response, 0 for prompt/pad
+    gradient_accumulation_steps: int,  # Number of microbatches per optimizer step
+    loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+    raw_rewards: torch.Tensor | None = None,      # (batch_size, 1)
+    advantages: torch.Tensor | None = None,       # (batch_size, 1)
+    old_log_probs: torch.Tensor | None = None,    # (batch_size, seq_length)
+    cliprange: float | None = None,
+) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    # step 1: compute per token loss
+    per_token_loss, per_token_metadata = compute_policy_gradient_loss(
+                policy_log_probs,loss_type,raw_rewards,advantages,old_log_probs,cliprange) # B, T
+    # step 2: compute per instance loss
+    per_instance_loss = masked_mean(per_token_loss, response_mask, dim=1) # B, 1
+    # step 3: average out all instances loss in the batch
+    total_loss = per_instance_loss.mean()
+    # step 4: gradient accumulation
+    scaled_loss = total_loss / gradient_accumulation_steps
+    # step 5: back propagation on the loss
+    scaled_loss.backward()
+
+    return scaled_loss, per_token_metadata
+    
+    
+
+def compute_policy_gradient_loss(
+      policy_log_probs: torch.Tensor,  # (batch_size, seq_length)
+      loss_type: Literal["no_baseline", "reinforce_with_baseline", "grpo_clip"],
+      raw_rewards: torch.Tensor | None = None,      # (batch_size, 1)
+      advantages: torch.Tensor | None = None,       # (batch_size, 1)
+      old_log_probs: torch.Tensor | None = None,    # (batch_size, seq_length)
+      cliprange: float | None = None,
+  ) -> tuple[torch.Tensor, dict[str, torch.Tensor]]:
+    if loss_type == "no_baseline":
+        loss = compute_naive_policy_gradient_loss(raw_rewards_or_advantages=raw_rewards, policy_log_probs=policy_log_probs)
+        return loss, {}
+    elif loss_type == "reinforce_with_baseline":
+        loss = compute_naive_policy_gradient_loss(raw_rewards_or_advantages=advantages, policy_log_probs=policy_log_probs)
+        return loss, {}
+    elif loss_type == "grpo_clip":
+        loss, metadata = compute_grpo_clip_loss(advantages=advantages,
+                               policy_log_probs=policy_log_probs,
+                               old_log_probs=old_log_probs,
+                               cliprange=cliprange)
+        return loss, metadata
+    
+
+def masked_mean(
+    tensor: torch.Tensor,
+    mask: torch.Tensor,
+    dim: int | None = None,
+) -> torch.Tensor:
+    masked_tensor = tensor * mask # (B, T)
+    # compute the sum
+    masked_tensor_sum = masked_tensor.sum(dim=dim) # (B, 1)
+    count_of_one = mask.sum(dim=dim) # (B, 1)
+    # if any count of one is 0, then need to give a very small number to it
+    #
+    masked_mean = masked_tensor_sum / count_of_one
+    return masked_mean
 
 def compute_grpo_clip_loss(
     advantages: torch.Tensor,
@@ -11,19 +74,17 @@ def compute_grpo_clip_loss(
     ratio = torch.exp(policy_log_probs - old_log_probs)
     a = -advantages * ratio # shape B, T
     b = -advantages * torch.clamp(ratio, min=1-cliprange, max=1+cliprange)
-    results = torch.min(a,b)
+    results = torch.max(a,b)
     
     with torch.no_grad():
-        clipfrac = ((ratio < 1.0 - cliprange) | (ratio > 1.0 +
-  cliprange)).float()
+        clipfrac = ((ratio < 1.0 - cliprange) | (ratio > 1.0 + cliprange)).float()
 
     metadata = {
       "clipfrac": clipfrac,  # Fraction of tokens that got clipped
-      }    
+    }    
     
     return results, metadata
     
-
 
 def compute_naive_policy_gradient_loss(
     raw_rewards_or_advantages: torch.Tensor,
