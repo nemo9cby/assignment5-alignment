@@ -195,6 +195,55 @@ def format_prompt(question: str, template: str) -> str:
     return template.format(question=question)
 
 
+def sample_prompts(
+    examples: list[dict],
+    n_prompts: int,
+    prompt_template: str,
+    rng: torch.Generator | None = None,
+) -> tuple[list[str], list[str], list[str]]:
+    """
+    Sample a batch of prompts from the dataset.
+
+    This is the first step in GRPO - sampling questions from the training set
+    and formatting them as prompts for the language model.
+
+    Args:
+        examples: List of dataset examples, each with 'problem' and 'answer' keys
+        n_prompts: Number of prompts to sample
+        prompt_template: Template string with {question} placeholder
+        rng: Optional random generator for reproducibility
+
+    Returns:
+        questions: List of raw question strings (n_prompts)
+        ground_truths: List of ground truth answers (n_prompts)
+        prompts: List of formatted prompt strings (n_prompts)
+    """
+    # Sample random indices
+    n_examples = len(examples)
+
+    if rng is not None:
+        # Use the provided generator for reproducibility
+        indices = torch.randint(0, n_examples, (n_prompts,), generator=rng).tolist()
+    else:
+        indices = torch.randint(0, n_examples, (n_prompts,)).tolist()
+
+    # Extract questions and ground truths
+    questions = []
+    ground_truths = []
+    prompts = []
+
+    for idx in indices:
+        example = examples[idx]
+        question = example['problem']  # MATH dataset uses 'problem' key
+        answer = example['answer']     # MATH dataset uses 'answer' key
+
+        questions.append(question)
+        ground_truths.append(answer)
+        prompts.append(format_prompt(question, prompt_template))
+
+    return questions, ground_truths, prompts
+
+
 # =============================================================================
 # Rollout Generation
 # =============================================================================
@@ -372,10 +421,15 @@ def grpo_train_loop(config: GRPOConfig | None = None):
     # ==========================================================================
 
     print(f"Loading training data from {config.train_data_path}")
-    # TODO: Load train and validation datasets
-    train_examples = None
-    val_examples = None
-    prompt_template = None
+    train_examples = load_dataset(config.train_data_path)
+    print(f"Loaded {len(train_examples)} training examples")
+
+    print(f"Loading validation data from {config.val_data_path}")
+    val_examples = load_dataset(config.val_data_path)
+    print(f"Loaded {len(val_examples)} validation examples")
+
+    print(f"Loading prompt template from {config.prompt_template_path}")
+    prompt_template = load_prompt_template(config.prompt_template_path)
 
     # ==========================================================================
     # Setup: Sampling parameters
@@ -434,10 +488,15 @@ def grpo_train_loop(config: GRPOConfig | None = None):
         # Step 1: Sample batch of questions
         # ======================================================================
 
-        # TODO: Sample n_prompts_per_rollout_batch questions from train set
-        batch_questions = None
-        batch_ground_truths = None
-        batch_prompts = None
+        # Sample n_prompts_per_rollout_batch questions from train set
+        batch_questions, batch_ground_truths, batch_prompts = sample_prompts(
+            examples=train_examples,
+            n_prompts=config.n_prompts_per_rollout_batch,
+            prompt_template=prompt_template,
+            rng=None,  # Could pass a generator for reproducibility
+        )
+
+        print(f"Step {grpo_step}: Sampled {len(batch_prompts)} prompts")
 
         # ======================================================================
         # Step 2: Load current policy weights into vLLM
