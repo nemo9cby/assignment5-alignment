@@ -1,5 +1,8 @@
 # CS336 Spring 2026 Assignment 5: Alignment
 
+> 📚 **本 fork 附带一门交互式后训练入门课程**（每一步可验证，GPU 部分走 Modal，含 AI Lab 面试题集）：
+> 从 [course/README.md](./course/README.md) 开始，随时用 `uv run python course/check.py` 查看进度。
+
 For a full description of the assignment, see the assignment handout at
 [cs336_spring2026_assignment5_alignment.pdf](./cs336_spring2026_assignment5_alignment.pdf)
 
