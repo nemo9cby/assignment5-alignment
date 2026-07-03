@@ -2,25 +2,33 @@ import hashlib
 import os
 import pickle
 from pathlib import Path
-from typing import TypeVar
+from typing import Any, TypeVar
 
 import numpy as np
 import pytest
 import torch
 from torch import Tensor
-from transformers import AutoModelForCausalLM, AutoTokenizer
+from tokenizers import Tokenizer
+from tokenizers.models import WordLevel
+from tokenizers.pre_tokenizers import Whitespace
+from transformers import AutoModelForCausalLM, GPT2Config, GPT2LMHeadModel, PreTrainedTokenizerFast
+
+from .common import FIXTURES_PATH
 
 
-def pytest_addoption(parser):
-    parser.addoption("--snapshot-exact", action="store_true", help="Use exact matching standards for snapshot matching")
-
-_A = TypeVar("_A", np.ndarray, Tensor)
 
 
-def _canonicalize_array(arr: _A) -> np.ndarray:
+class DEFAULT:
+    pass
+
+
+_A = TypeVar("_A")
+
+
+def _canonicalize_array(arr: Any) -> np.ndarray:
     if isinstance(arr, Tensor):
         arr = arr.detach().cpu().numpy()
-    return arr
+    return np.asarray(arr)
 
 
 class NumpySnapshot:
@@ -29,9 +37,15 @@ class NumpySnapshot:
     def __init__(
         self,
         snapshot_dir: str = "tests/_snapshots",
+        default_force_update: bool = False,
+        always_match_exact: bool = False,
+        default_test_name: str | None = None,
     ):
         self.snapshot_dir = Path(snapshot_dir)
         os.makedirs(self.snapshot_dir, exist_ok=True)
+        self.default_force_update = default_force_update
+        self.always_match_exact = always_match_exact
+        self.default_test_name = default_test_name
 
     def _get_snapshot_path(self, test_name: str) -> Path:
         """Get the path to the snapshot file."""
@@ -40,10 +54,10 @@ class NumpySnapshot:
     def assert_match(
         self,
         actual: _A | dict[str, _A],
-        test_name: str,
-        force_update: bool = False,
         rtol: float = 1e-4,
         atol: float = 1e-2,
+        test_name: str | type[DEFAULT] = DEFAULT,
+        force_update: bool | type[DEFAULT] = DEFAULT,
     ):
         """
         Assert that the actual array(s) matches the snapshot.
@@ -53,6 +67,14 @@ class NumpySnapshot:
             test_name: The name of the test (used for the snapshot file)
             update: If True, update the snapshot instead of comparing
         """
+        if force_update is DEFAULT:
+            force_update = self.default_force_update
+        if self.always_match_exact:
+            rtol = atol = 0
+        if test_name is DEFAULT:
+            assert self.default_test_name is not None, "Test name must be provided or set as default"
+            test_name = self.default_test_name
+
         snapshot_path = self._get_snapshot_path(test_name)
 
         # Convert single array to dictionary for consistent handling
@@ -85,12 +107,19 @@ class NumpySnapshot:
 
 
 class Snapshot:
-    def __init__(self, snapshot_dir: str = "tests/_snapshots"):
+    def __init__(
+        self,
+        snapshot_dir: str = "tests/_snapshots",
+        default_force_update: bool = False,
+        default_test_name: str | None = None,
+    ):
         """
         Snapshot for arbitrary data types, saved as pickle files.
         """
         self.snapshot_dir = Path(snapshot_dir)
         os.makedirs(self.snapshot_dir, exist_ok=True)
+        self.default_force_update = default_force_update
+        self.default_test_name = default_test_name
 
     def _get_snapshot_path(self, test_name: str) -> Path:
         return self.snapshot_dir / f"{test_name}.pkl"
@@ -98,8 +127,8 @@ class Snapshot:
     def assert_match(
         self,
         actual: _A | dict[str, _A],
-        test_name: str,
-        force_update: bool = False,
+        test_name: str | type[DEFAULT] = DEFAULT,
+        force_update: bool | type[DEFAULT] = DEFAULT,
     ):
         """
         Assert that the actual data matches the snapshot.
@@ -108,6 +137,12 @@ class Snapshot:
             test_name: The name of the test (used for the snapshot file)
             force_update: If True, update the snapshot instead of comparing
         """
+
+        if force_update is DEFAULT:
+            force_update = self.default_force_update
+        if test_name is DEFAULT:
+            assert self.default_test_name is not None, "Test name must be provided or set as default"
+            test_name = self.default_test_name
 
         snapshot_path = self._get_snapshot_path(test_name)
 
@@ -127,6 +162,10 @@ class Snapshot:
             assert actual == expected_data, f"Data does not match snapshot for {test_name}"
 
 
+def _snapshot_dir_for_request(request) -> str:
+    return str(Path(request.node.path).parent / "_snapshots")
+
+
 @pytest.fixture
 def snapshot(request):
     """
@@ -140,20 +179,11 @@ def snapshot(request):
     force_update = False
 
     # Create the snapshot handler with default settings
-    snapshot_handler = Snapshot()
-
-    # Patch the assert_match method to include the update flag by default
-    original_assert_match = snapshot_handler.assert_match
-
-    def patched_assert_match(actual, test_name=None, force_update=force_update):
-        # If test_name is not provided, use the test function name
-        if test_name is None:
-            test_name = request.node.name
-        return original_assert_match(actual, test_name=test_name, force_update=force_update)
-
-    snapshot_handler.assert_match = patched_assert_match
-
-    return snapshot_handler
+    return Snapshot(
+        snapshot_dir=_snapshot_dir_for_request(request),
+        default_force_update=force_update,
+        default_test_name=request.node.name,
+    )
 
 
 # Fixture that can be used in all tests
@@ -172,22 +202,12 @@ def numpy_snapshot(request):
     match_exact = request.config.getoption("--snapshot-exact", default=False)
 
     # Create the snapshot handler with default settings
-    snapshot = NumpySnapshot()
-
-    # Patch the assert_match method to include the update flag by default
-    original_assert_match = snapshot.assert_match
-
-    def patched_assert_match(actual, test_name=None, force_update=force_update, rtol=1e-4, atol=1e-2):
-        # If test_name is not provided, use the test function name
-        if test_name is None:
-            test_name = request.node.name
-        if match_exact:
-            rtol = atol = 0
-        return original_assert_match(actual, test_name=test_name, force_update=force_update, rtol=rtol, atol=atol)
-
-    snapshot.assert_match = patched_assert_match
-
-    return snapshot
+    return NumpySnapshot(
+        snapshot_dir=_snapshot_dir_for_request(request),
+        default_force_update=force_update,
+        always_match_exact=match_exact,
+        default_test_name=request.node.name,
+    )
 
 
 @pytest.fixture
@@ -210,24 +230,65 @@ def output_strs():
 
 @pytest.fixture
 def model_id():
-    # Try to use local model if available, otherwise use from HF
-    import os
-    local_model_path = "/data/a5-alignment/models/Qwen2.5-Math-1.5B"
-    if os.path.exists(local_model_path):
-        return local_model_path
-    else:
-        # Use model from Hugging Face hub
-        return "Qwen/Qwen2.5-Math-1.5B"
+    return FIXTURES_PATH / "tiny-gpt2"
 
 
 @pytest.fixture
-def tokenizer(model_id):
-    return AutoTokenizer.from_pretrained(model_id)
+def tokenizer():
+    vocab = {
+        "<pad>": 0,
+        "<eos>": 1,
+        "<unk>": 2,
+        "Hello": 3,
+        "world": 4,
+        "This": 5,
+        "is": 6,
+        "a": 7,
+        "test": 8,
+        "another": 9,
+        "Question": 10,
+        "Answer": 11,
+        "Instruction": 12,
+        "Response": 13,
+        "###": 14,
+    }
+    word_tokenizer = Tokenizer(WordLevel(vocab=vocab, unk_token="<unk>"))
+    word_tokenizer.pre_tokenizer = Whitespace()
+    return PreTrainedTokenizerFast(
+        tokenizer_object=word_tokenizer,
+        pad_token="<pad>",
+        eos_token="<eos>",
+        unk_token="<unk>",
+    )
 
 
 @pytest.fixture
 def model(model_id):
     return AutoModelForCausalLM.from_pretrained(model_id)
+
+
+@pytest.fixture
+def tiny_train_model(tokenizer):
+    torch.manual_seed(0)
+    config = GPT2Config(
+        vocab_size=len(tokenizer),
+        n_positions=16,
+        n_ctx=16,
+        n_embd=8,
+        n_layer=1,
+        n_head=2,
+        n_inner=16,
+        resid_pdrop=0.0,
+        embd_pdrop=0.0,
+        attn_pdrop=0.0,
+        use_cache=False,
+        bos_token_id=tokenizer.eos_token_id,
+        eos_token_id=tokenizer.eos_token_id,
+        pad_token_id=tokenizer.pad_token_id,
+    )
+    model = GPT2LMHeadModel(config)
+    model.train()
+    return model.cpu()
 
 
 @pytest.fixture

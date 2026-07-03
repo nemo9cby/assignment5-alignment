@@ -10,15 +10,30 @@ All changes we make to the assignment code or PDF will be documented in this fil
 
 ### Fixed
 
-## [1.0.2] - 2025-06-01
+## [2.0.1] - 2026-06-03
 
 ### Added
-- handout: added guidance on size of D_b in expert iteration experiment
-- code: add data for optional assignment
+- both: additional prompt files and writeup clarifications to clarify prompting
+- both: modal utils and shared volume with safety models and datasets
 
 ### Changed
 
 ### Fixed
+- both: updated alpaca eval command to work with new package versions; downloaded gpt4-turbo reference data
+
+## [2.0.0] - 2026-05-20
+
+### Added
+- both: added MaxRL, GSPO
+- both: added few-shot r1_zero prompt
+- both: 4 random seeds (up from 1 random seed)
+- handout: added math and word problems
+
+### Changed
+- handout: changed from Qwen-2.5-Math-1.5B on MATH to Olmo-2-1B on GSM8K
+
+### Fixed
+- code: Updated package versions and code to work with B200s (vllm_utils.py)
 
 ## [1.0.1] - 2025-05-31
 
